@@ -1,4 +1,4 @@
-rootProject.name = "kotlin-minilog"
+rootProject.name = "kotlin-java-escape"
 
 dependencyResolutionManagement {
     repositories {
