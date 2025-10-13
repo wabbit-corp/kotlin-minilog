@@ -1,30 +1,39 @@
+@file:OptIn(ExperimentalUuidApi::class)
+
 package minilog
 
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonPrimitive
 import one.wabbit.formatting.escapeJavaString
 import java.util.logging.Logger
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.collections.ArrayDeque
+import kotlin.uuid.ExperimentalUuidApi
+import kotlin.uuid.Uuid
 
 abstract class Log {
     data class Tag(val name: String, val c: Char, val level: java.util.logging.Level)
 
     data class Stacktrace(
         val stack: List<StackTraceElement>,
+        val className: String?,
+        val methodName: String?,
         val fileName: String?,
         val lineNumber: Int?)
 
     class Context {
         var description: String? = null
-        val variables = mutableListOf<Pair<String, Any?>>()
+        val variables = mutableListOf<Pair<String, JsonElement>>()
         val exceptions = mutableListOf<Throwable>()
         fun message(msg: String) { description = msg }
-        fun data(name: String, value: Boolean?) { variables.add(name to value) }
-        fun data(name: String, value: Int?) { variables.add(name to value) }
-        fun data(name: String, value: Long?) { variables.add(name to value) }
-        fun data(name: String, value: Double?) { variables.add(name to value) }
-        fun data(name: String, value: UUID?) { variables.add(name to value) }
-        fun data(name: String, value: String?) { variables.add(name to value) }
+        fun data(name: String, value: Boolean?) { variables.add(name to JsonPrimitive(value)) }
+        fun data(name: String, value: Int?) { variables.add(name to JsonPrimitive(value)) }
+        fun data(name: String, value: Long?) { variables.add(name to JsonPrimitive(value)) }
+        fun data(name: String, value: Double?) { variables.add(name to JsonPrimitive(value)) }
+        fun data(name: String, value: UUID?) { variables.add(name to JsonPrimitive(value?.toString())) }
+        fun data(name: String, value: Uuid?) { variables.add(name to JsonPrimitive(value?.toString())) }
+        fun data(name: String, value: String?) { variables.add(name to JsonPrimitive(value)) }
         fun exception(throwable: Throwable) { exceptions.add(throwable) }
     }
 
@@ -36,8 +45,14 @@ abstract class Log {
     abstract fun log(ulid: String, t1: Tag, t2: Tag, f: (Context) -> Unit)
     abstract fun log(ulid: String, t1: Tag, t2: Tag, t3: Tag, f: (Context) -> Unit)
 
-    class WithContext(val base: Log, val parentCtx: Context) {
-        fun log(t1: Tag, f: (Context) -> Unit) {
+    abstract fun child(name: String): Log
+
+    class WithContext(val base: Log, val parentCtx: Context) : Log() {
+        override fun child(name: String): Log {
+            return WithContext(base.child(name), parentCtx)
+        }
+
+        override fun log(t1: Tag, f: (Context) -> Unit) {
             base.log(t1) {
                 it.description = parentCtx.description
                 it.variables.addAll(parentCtx.variables)
@@ -45,7 +60,7 @@ abstract class Log {
                 f(it)
             }
         }
-        fun log(t1: Tag, t2: Tag, f: (Context) -> Unit) {
+        override fun log(t1: Tag, t2: Tag, f: (Context) -> Unit) {
             base.log(t1, t2) {
                 it.description = parentCtx.description
                 it.variables.addAll(parentCtx.variables)
@@ -53,7 +68,7 @@ abstract class Log {
                 f(it)
             }
         }
-        fun log(t1: Tag, t2: Tag, t3: Tag, f: (Context) -> Unit) {
+        override fun log(t1: Tag, t2: Tag, t3: Tag, f: (Context) -> Unit) {
             base.log(t1, t2, t3) {
                 it.description = parentCtx.description
                 it.variables.addAll(parentCtx.variables)
@@ -62,7 +77,7 @@ abstract class Log {
             }
         }
 
-        fun log(ulid: String, t1: Tag, f: (Context) -> Unit) {
+        override fun log(ulid: String, t1: Tag, f: (Context) -> Unit) {
             base.log(ulid, t1) {
                 it.description = parentCtx.description
                 it.variables.addAll(parentCtx.variables)
@@ -70,7 +85,7 @@ abstract class Log {
                 f(it)
             }
         }
-        fun log(ulid: String, t1: Tag, t2: Tag, f: (Context) -> Unit) {
+        override fun log(ulid: String, t1: Tag, t2: Tag, f: (Context) -> Unit) {
             base.log(ulid, t1, t2) {
                 it.description = parentCtx.description
                 it.variables.addAll(parentCtx.variables)
@@ -78,7 +93,7 @@ abstract class Log {
                 f(it)
             }
         }
-        fun log(ulid: String, t1: Tag, t2: Tag, t3: Tag, f: (Context) -> Unit) {
+        override fun log(ulid: String, t1: Tag, t2: Tag, t3: Tag, f: (Context) -> Unit) {
             base.log(ulid, t1, t2, t3) {
                 it.description = parentCtx.description
                 it.variables.addAll(parentCtx.variables)
@@ -88,14 +103,12 @@ abstract class Log {
         }
     }
 
-    fun withContext(f: (Context) -> Unit): Log {
-        val ctx = Context()
-        f(ctx)
-        return this
-    }
+    fun withContext(build: Context.() -> Unit): WithContext =
+        WithContext(this, Context().apply(build))
 
     companion object {
         val dummy: Log = object : Log() {
+            override fun child(name: String): Log = this
             override fun log(t1: Tag, f: (Context) -> Unit) { }
             override fun log(t1: Tag, t2: Tag, f: (Context) -> Unit) { }
             override fun log(t1: Tag, t2: Tag, t3: Tag, f: (Context) -> Unit) { }
@@ -108,7 +121,7 @@ abstract class Log {
 
 sealed class Set1<out T> {
     object All : Set1<Nothing>()
-    data class Prim<out T>(val on: Set<T>) : Set1<Nothing>()
+    data class Prim<out T>(val on: Set<T>) : Set1<T>()
 
     operator fun contains(v1: @UnsafeVariance T): Boolean = when(this) {
         is All -> true
@@ -126,63 +139,72 @@ interface Reporter {
     )
 }
 
-private val BAD_PREFIXES = arrayOf(
-    "java.lang.Thread",
-    "net.minecraft.server",
-    "org.bukkit.craftbukkit",
-    "io.papermc.paper"
-)
-
-private fun cleanupStackTrace(stack: Array<StackTraceElement>): List<StackTraceElement> {
-    val queue = ArrayDeque<StackTraceElement>()
-
-    for (s in stack) queue.add(s)
-
-    while (queue.isNotEmpty()) {
-        val head = queue.first()
-        if (head.className == "minilog.LogManager\$LogImpl" ||
-            head.className == "minilog.Log") {
-            queue.removeFirst()
-        } else break
-    }
-
-    while (queue.isNotEmpty()) {
-        val tail = queue.last()
-        if (BAD_PREFIXES.any { tail.className.startsWith(it) }) {
-            queue.removeLast()
-        } else break
-    }
-
-    return queue.toList()
-}
+//private val BAD_PREFIXES = arrayOf(
+//    "java.lang.Thread",
+//    "net.minecraft.server",
+//    "org.bukkit.craftbukkit",
+//    "io.papermc.paper"
+//)
 
 private val NL = System.lineSeparator()
 
-class LogManager(var reporter: Reporter? = null) {
+class LogManager(
+    var reporter: Reporter? = null,
+    var bottomFrameBlacklist: List<String> = listOf("java.lang.Thread")
+) {
+    private fun cleanupStackTraceDynamic(stack: Array<StackTraceElement>): List<StackTraceElement> {
+        val queue = ArrayDeque<StackTraceElement>().apply { stack.forEach { add(it) } }
+        while (queue.isNotEmpty()) {
+            val head = queue.first()
+            if (head.className == "${this::class.qualifiedName}\$LogImpl" ||
+                head.className == Log::class.qualifiedName) {
+                queue.removeFirst()
+            } else break
+        }
+        while (queue.isNotEmpty()) {
+            val tail = queue.last()
+            if (bottomFrameBlacklist.any { tail.className.startsWith(it) }) queue.removeLast()
+            else break
+        }
+        return queue.toList()
+    }
+
     private fun stackTraceInfo(stack: Array<StackTraceElement>): Log.Stacktrace {
         val adjustedStack = stack.dropWhile {
             it.className == "minilog.LogManager\$LogImpl" ||
                     it.className == "minilog.Log"
         }
-
         val el = if (adjustedStack.isNotEmpty()) adjustedStack[0] else null
-        val fn = el?.fileName
-        val ln = el?.lineNumber
-
-        return Log.Stacktrace(adjustedStack, fn, ln)
+        return Log.Stacktrace(stack = adjustedStack,
+            className = el?.className,
+            methodName = el?.methodName,
+            fileName = el?.fileName,
+            lineNumber = el?.lineNumber
+        )
     }
 
     private inner class LogImpl(
-        val name: String,
+        val name: List<String>,
         val logger: Logger,
-        @Volatile var enabled: Set1<Tag>) : Log() {
+        @Volatile var enabled: Set1<Tag>
+    ) : Log() {
+        override fun child(name: String): Log
+            // FIXME: enabled inheritance?
+            = LogImpl(this.name + name, Logger.getLogger(this.name.joinToString(".") + "." + name), enabled)
 
         private fun log(ulid: String?, tags: List<Tag>, f: Context.() -> Unit) {
+            // Tag gate first
+            if (!tags.any { it in enabled }) return
+            // JUL gate next
+            val effectiveLevel = tags.maxOf { it.level.intValue() }.let { n ->
+                tags.first { it.level.intValue() == n }.level
+            }
+            if (!logger.isLoggable(effectiveLevel)) return
+
             val dummyException = Throwable()
             val stack = stackTraceInfo(dummyException.stackTrace)
 
             val tagString = tags.map { it.c }.sorted().joinToString(separator="")
-            val effectiveLevel = tags.map { it.level }.maxByOrNull { it.intValue() }!!
 
             val ctx = Context()
             f(ctx)
@@ -217,8 +239,8 @@ class LogManager(var reporter: Reporter? = null) {
                     .append(namePrefix).append(throwable.javaClass.name).append(": ")
                     .append(throwable.message).append(NL)
 
-                val childStack = cleanupStackTrace(throwable.stackTrace)
-                val parentStack = parent?.let { cleanupStackTrace(it.stackTrace) } ?: emptyList()
+                val childStack = cleanupStackTraceDynamic(throwable.stackTrace)
+                val parentStack = parent?.let { cleanupStackTraceDynamic(it.stackTrace) } ?: emptyList()
 
                 if (parent == null) {
                     for (s in childStack) {
@@ -259,7 +281,7 @@ class LogManager(var reporter: Reporter? = null) {
             ////////////////////////////////////////////////////////////////////
             // Logging.
             ////////////////////////////////////////////////////////////////////
-            logger.log(effectiveLevel, message)
+            logger.logp(effectiveLevel, stack.className, stack.methodName, message)
         }
 
         override fun log(t1: Tag, f: (Context) -> Unit) {
@@ -286,5 +308,10 @@ class LogManager(var reporter: Reporter? = null) {
     private val loggers = ConcurrentHashMap<String, LogImpl>()
 
     fun getLogger(name: String): Log =
-        loggers.computeIfAbsent(name) { LogImpl(name, Logger.getLogger(name), Set1.All) }
+        loggers.computeIfAbsent(name) { LogImpl(listOf(name), Logger.getLogger(name), Set1.All) }
+
+    fun setEnabled(name: String, enabled: Set1<Log.Tag>) {
+        loggers.computeIfAbsent(name) { LogImpl(listOf(name), Logger.getLogger(name), Set1.All) }
+            .enabled = enabled
+    }
 }
