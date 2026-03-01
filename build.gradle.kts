@@ -30,7 +30,7 @@ publishing {
 }
 
 dependencies {
-    implementation("com.github.wabbit-corp:kotlin-java-escape:1.0.1")
+    implementation("one.wabbit:kotlin-java-escape:1.0.1")
 
     testImplementation(kotlin("test"))
 
