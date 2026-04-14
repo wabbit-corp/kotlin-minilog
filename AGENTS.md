@@ -10,5 +10,6 @@ Add repo-specific instructions above or below the managed facts block. Keep manu
 - Canonical repo target: `kotlin-minilog`. Useful entrypoints: `dev project show kotlin-minilog`, `dev build kotlin-minilog`, `dev check kotlin-minilog`.
 - Setup-managed files are regenerated with `dev setup kotlin-minilog`; avoid hand-editing stamped generated files.
 - Sanctioned override files in this repo: `build.extra.gradle.kts`, `settings.local.gradle.kts`.
+- Review `kotlin-conventions.md` before editing Kotlin code in this repo.
 - Configured project types: `kotlin/jvm`. Docs: `dokka`.
 <!-- END app-wabbit-dev managed facts -->
